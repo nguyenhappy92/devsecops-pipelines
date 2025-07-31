@@ -1,0 +1,59 @@
+{
+  "name": "nodejs-devsecops-example",
+  "version": "1.0.0",
+  "description": "Node.js application with DevSecOps pipeline implementation",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "build": "npm run lint && npm run test",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:e2e": "jest --config jest.e2e.config.js",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix",
+    "security:scan": "npm audit && npm run security:check-dependencies",
+    "security:check-dependencies": "node scripts/security/check-vulnerabilities.js",
+    "docker:build": "docker build -t nodejs-app .",
+    "docker:run": "docker run -p 3000:3000 nodejs-app",
+    "k8s:deploy": "kubectl apply -f k8s/",
+    "k8s:deploy-dev": "kubectl apply -f k8s/dev/",
+    "k8s:deploy-staging": "kubectl apply -f k8s/staging/",
+    "k8s:deploy-prod": "kubectl apply -f k8s/production/"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.1.5",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "joi": "^17.11.0",
+    "mongoose": "^8.0.3",
+    "winston": "^3.11.0",
+    "compression": "^1.7.4",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "nodemon": "^3.0.2",
+    "eslint": "^8.55.0",
+    "puppeteer": "^21.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "keywords": [
+    "nodejs",
+    "devsecops",
+    "security",
+    "testing",
+    "docker",
+    "kubernetes"
+  ],
+  "author": "DevSecOps Team",
+  "license": "MIT"
+} 

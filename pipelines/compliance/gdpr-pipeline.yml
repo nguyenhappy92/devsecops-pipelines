@@ -1,0 +1,535 @@
+# GDPR Compliance Pipeline Template
+# Automated compliance checking and reporting for GDPR framework
+
+name: GDPR Compliance Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.tf'
+      - '**/*.json'
+      - '**/*.py'
+      - '**/*.js'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'  # Daily compliance scan at 6 AM UTC
+  workflow_dispatch:
+    inputs:
+      compliance_scope:
+        description: 'GDPR principle scope to check'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - lawfulness_fairness_transparency
+          - purpose_limitation
+          - data_minimization
+          - accuracy
+          - storage_limitation
+          - integrity_confidentiality
+          - accountability
+
+env:
+  COMPLIANCE_FRAMEWORK: 'GDPR'
+  COMPLIANCE_VERSION: '2018'
+  REPORT_FORMAT: 'json'
+
+jobs:
+  # GDPR Principle 1: Lawfulness, Fairness, and Transparency
+  principle-1:
+    name: Lawfulness, Fairness, and Transparency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Legal Basis for Processing
+        run: |
+          # Check for consent mechanisms
+          python scripts/compliance/check_consent_mechanisms.py
+          
+          # Check for legitimate interest assessments
+          python scripts/compliance/check_legitimate_interest.py
+          
+          # Check for contract processing
+          python scripts/compliance/check_contract_processing.py
+
+      - name: Check Transparency Requirements
+        run: |
+          # Check for privacy notices
+          python scripts/compliance/check_privacy_notices.py
+          
+          # Check for data processing information
+          python scripts/compliance/check_processing_info.py
+          
+          # Check for cookie consent
+          python scripts/compliance/check_cookie_consent.py
+
+      - name: Check Fair Processing
+        run: |
+          # Check for data subject rights
+          python scripts/compliance/check_data_subject_rights.py
+          
+          # Check for automated decision making
+          python scripts/compliance/check_automated_decisions.py
+
+      - name: Upload principle 1 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-1-results
+          path: principle-1-report.json
+
+  # GDPR Principle 2: Purpose Limitation
+  principle-2:
+    name: Purpose Limitation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Purpose Specification
+        run: |
+          # Check for clear purpose statements
+          python scripts/compliance/check_purpose_statements.py
+          
+          # Check for purpose documentation
+          python scripts/compliance/check_purpose_documentation.py
+
+      - name: Check Purpose Compatibility
+        run: |
+          # Check for compatible processing
+          python scripts/compliance/check_compatible_processing.py
+          
+          # Check for purpose changes
+          python scripts/compliance/check_purpose_changes.py
+
+      - name: Check Purpose Communication
+        run: |
+          # Check for purpose communication to data subjects
+          python scripts/compliance/check_purpose_communication.py
+          
+          # Check for purpose updates
+          python scripts/compliance/check_purpose_updates.py
+
+      - name: Upload principle 2 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-2-results
+          path: principle-2-report.json
+
+  # GDPR Principle 3: Data Minimization
+  principle-3:
+    name: Data Minimization
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Data Collection Practices
+        run: |
+          # Check for minimal data collection
+          python scripts/compliance/check_minimal_collection.py
+          
+          # Check for data necessity
+          python scripts/compliance/check_data_necessity.py
+
+      - name: Check Data Retention
+        run: |
+          # Check for retention periods
+          python scripts/compliance/check_retention_periods.py
+          
+          # Check for data deletion
+          python scripts/compliance/check_data_deletion.py
+
+      - name: Check Data Anonymization
+        run: |
+          # Check for anonymization practices
+          python scripts/compliance/check_anonymization.py
+          
+          # Check for pseudonymization
+          python scripts/compliance/check_pseudonymization.py
+
+      - name: Upload principle 3 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-3-results
+          path: principle-3-report.json
+
+  # GDPR Principle 4: Accuracy
+  principle-4:
+    name: Accuracy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Data Accuracy Measures
+        run: |
+          # Check for data validation
+          python scripts/compliance/check_data_validation.py
+          
+          # Check for data quality controls
+          python scripts/compliance/check_data_quality.py
+
+      - name: Check Data Correction Processes
+        run: |
+          # Check for correction mechanisms
+          python scripts/compliance/check_correction_mechanisms.py
+          
+          # Check for rectification procedures
+          python scripts/compliance/check_rectification_procedures.py
+
+      - name: Check Data Verification
+        run: |
+          # Check for verification processes
+          python scripts/compliance/check_verification_processes.py
+          
+          # Check for accuracy monitoring
+          python scripts/compliance/check_accuracy_monitoring.py
+
+      - name: Upload principle 4 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-4-results
+          path: principle-4-report.json
+
+  # GDPR Principle 5: Storage Limitation
+  principle-5:
+    name: Storage Limitation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Retention Policies
+        run: |
+          # Check for retention policies
+          python scripts/compliance/check_retention_policies.py
+          
+          # Check for retention schedules
+          python scripts/compliance/check_retention_schedules.py
+
+      - name: Check Data Deletion
+        run: |
+          # Check for deletion procedures
+          python scripts/compliance/check_deletion_procedures.py
+          
+          # Check for secure deletion
+          python scripts/compliance/check_secure_deletion.py
+
+      - name: Check Storage Review
+        run: |
+          # Check for regular reviews
+          python scripts/compliance/check_storage_reviews.py
+          
+          # Check for storage audits
+          python scripts/compliance/check_storage_audits.py
+
+      - name: Upload principle 5 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-5-results
+          path: principle-5-report.json
+
+  # GDPR Principle 6: Integrity and Confidentiality
+  principle-6:
+    name: Integrity and Confidentiality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check Data Security
+        run: |
+          # Check for encryption at rest
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-encryption --bucket {}
+          
+          # Check for encryption in transit
+          aws elbv2 describe-load-balancers --query 'LoadBalancers[?Type==`application`]'
+          
+          # Check for access controls
+          aws iam get-account-authorization-details --query 'UserDetailList'
+
+      - name: Check Data Protection
+        run: |
+          # Check for backup encryption
+          aws rds describe-db-instances --query 'DBInstances[?StorageEncrypted==`false`]'
+          
+          # Check for key management
+          aws kms list-keys --query 'Keys'
+          
+          # Check for secrets management
+          aws secretsmanager list-secrets --query 'SecretList'
+
+      - name: Check Security Monitoring
+        run: |
+          # Check for security monitoring
+          aws guardduty list-findings --detector-id $(aws guardduty list-detectors --query 'DetectorIds[0]' --output text) --query 'FindingIds'
+          
+          # Check for access logging
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-logging --bucket {}
+
+      - name: Upload principle 6 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-6-results
+          path: principle-6-report.json
+
+  # GDPR Principle 7: Accountability
+  principle-7:
+    name: Accountability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Documentation
+        run: |
+          # Check for processing documentation
+          python scripts/compliance/check_processing_documentation.py
+          
+          # Check for policy documentation
+          python scripts/compliance/check_policy_documentation.py
+          
+          # Check for procedure documentation
+          python scripts/compliance/check_procedure_documentation.py
+
+      - name: Check Training and Awareness
+        run: |
+          # Check for staff training
+          python scripts/compliance/check_staff_training.py
+          
+          # Check for awareness programs
+          python scripts/compliance/check_awareness_programs.py
+
+      - name: Check Compliance Monitoring
+        run: |
+          # Check for compliance monitoring
+          python scripts/compliance/check_compliance_monitoring.py
+          
+          # Check for audit trails
+          python scripts/compliance/check_audit_trails.py
+
+      - name: Upload principle 7 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-principle-7-results
+          path: principle-7-report.json
+
+  # GDPR Data Subject Rights
+  data-subject-rights:
+    name: Data Subject Rights
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check Right to Information
+        run: |
+          # Check for information provision
+          python scripts/compliance/check_information_provision.py
+          
+          # Check for transparency
+          python scripts/compliance/check_transparency.py
+
+      - name: Check Right to Access
+        run: |
+          # Check for access mechanisms
+          python scripts/compliance/check_access_mechanisms.py
+          
+          # Check for data portability
+          python scripts/compliance/check_data_portability.py
+
+      - name: Check Right to Rectification
+        run: |
+          # Check for correction mechanisms
+          python scripts/compliance/check_correction_mechanisms.py
+          
+          # Check for update procedures
+          python scripts/compliance/check_update_procedures.py
+
+      - name: Check Right to Erasure
+        run: |
+          # Check for deletion mechanisms
+          python scripts/compliance/check_deletion_mechanisms.py
+          
+          # Check for right to be forgotten
+          python scripts/compliance/check_right_to_be_forgotten.py
+
+      - name: Check Right to Object
+        run: |
+          # Check for objection mechanisms
+          python scripts/compliance/check_objection_mechanisms.py
+          
+          # Check for processing restrictions
+          python scripts/compliance/check_processing_restrictions.py
+
+      - name: Upload data subject rights results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-data-subject-rights-results
+          path: data-subject-rights-report.json
+
+  # GDPR Compliance Reporting
+  gdpr-compliance-reporting:
+    name: Generate GDPR Compliance Report
+    runs-on: ubuntu-latest
+    needs: [principle-1, principle-2, principle-3, principle-4, principle-5, principle-6, principle-7, data-subject-rights]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all GDPR results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-1-results
+
+      - name: Download principle 2 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-2-results
+
+      - name: Download principle 3 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-3-results
+
+      - name: Download principle 4 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-4-results
+
+      - name: Download principle 5 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-5-results
+
+      - name: Download principle 6 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-6-results
+
+      - name: Download principle 7 results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-principle-7-results
+
+      - name: Download data subject rights results
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-data-subject-rights-results
+
+      - name: Generate comprehensive GDPR report
+        run: |
+          python scripts/compliance/generate_gdpr_report.py \
+            --principle-1-report principle-1-report.json \
+            --principle-2-report principle-2-report.json \
+            --principle-3-report principle-3-report.json \
+            --principle-4-report principle-4-report.json \
+            --principle-5-report principle-5-report.json \
+            --principle-6-report principle-6-report.json \
+            --principle-7-report principle-7-report.json \
+            --data-subject-rights-report data-subject-rights-report.json \
+            --output gdpr-comprehensive-report.json
+
+      - name: Generate GDPR compliance dashboard
+        run: |
+          python scripts/compliance/generate_gdpr_dashboard.py \
+            --report gdpr-comprehensive-report.json \
+            --output gdpr-dashboard.html
+
+      - name: Upload comprehensive GDPR report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdpr-comprehensive-report
+          path: |
+            gdpr-comprehensive-report.json
+            gdpr-dashboard.html
+
+      - name: Send GDPR compliance notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#compliance'
+          text: 'GDPR compliance assessment completed'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # GDPR Compliance Quality Gates
+  gdpr-compliance-quality-gates:
+    name: GDPR Compliance Quality Gates
+    runs-on: ubuntu-latest
+    needs: [gdpr-compliance-reporting]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download comprehensive report
+        uses: actions/download-artifact@v4
+        with:
+          name: gdpr-comprehensive-report
+
+      - name: Run GDPR compliance quality gates
+        run: |
+          python scripts/compliance/run_gdpr_compliance_quality_gates.py \
+            --report gdpr-comprehensive-report.json \
+            --framework GDPR \
+            --threshold 85
+
+      - name: Generate GDPR compliance score
+        run: |
+          COMPLIANCE_SCORE=$(python scripts/compliance/calculate_gdpr_compliance_score.py --report gdpr-comprehensive-report.json)
+          echo "GDPR Compliance Score: $COMPLIANCE_SCORE%"
+          
+          if (( $(echo "$COMPLIANCE_SCORE < 85" | bc -l) )); then
+            echo "❌ GDPR compliance score below threshold: $COMPLIANCE_SCORE%"
+            exit 1
+          fi
+          echo "✅ GDPR compliance score: $COMPLIANCE_SCORE%" 

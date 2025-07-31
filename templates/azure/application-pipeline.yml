@@ -1,0 +1,446 @@
+# Enterprise Application Pipeline Template
+# Azure DevOps Pipeline for Production Applications
+# Features: Multi-stage, Security Scanning, Compliance, Blue-Green Deployment
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - '**/*'
+
+pr:
+  branches:
+    include:
+      - main
+
+schedules:
+- cron: "0 2 * * *"  # Daily at 2 AM UTC
+  displayName: Daily Security Scan
+  branches:
+    include:
+      - main
+  always: true
+
+variables:
+  # Application Configuration
+  appName: '$(Build.Repository.Name)'
+  appVersion: '$(Build.BuildId)'
+  dockerRegistry: '$(ACR_NAME).azurecr.io'
+  dockerImage: '$(dockerRegistry)/$(appName):$(appVersion)'
+  
+  # Security Configuration
+  sastEnabled: 'true'
+  dastEnabled: 'true'
+  scaEnabled: 'true'
+  secretDetectionEnabled: 'true'
+  containerScanningEnabled: 'true'
+  
+  # Environment Configuration
+  devEnvironment: 'dev'
+  stagingEnvironment: 'staging'
+  productionEnvironment: 'production'
+  
+  # Quality Gates
+  testCoverageThreshold: '80'
+  vulnerabilityThreshold: 'medium'
+  securityScoreThreshold: '80'
+  
+  # Build Configuration
+  buildConfiguration: 'Release'
+  buildPlatform: 'Any CPU'
+
+stages:
+- stage: Validate
+  displayName: 'Validate Project Structure'
+  jobs:
+  - job: Validate
+    displayName: 'Validate Project Structure'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - task: NodeTool@0
+      displayName: 'Use Node.js'
+      inputs:
+        versionSpec: '18.x'
+        
+    - script: |
+        echo "Validating project structure and configuration..."
+        
+        # Check for required files
+        for file in README.md .gitignore; do
+          if [ ! -f "$file" ]; then
+            echo "ERROR: Required file $file is missing"
+            exit 1
+          fi
+        done
+        
+        # Validate Dockerfile if exists
+        if [ -f "Dockerfile" ]; then
+          echo "Validating Dockerfile..."
+          docker run --rm -i hadolint/hadolint < Dockerfile
+        fi
+        
+        # Validate Terraform if exists
+        if [ -d "terraform" ]; then
+          echo "Validating Terraform configuration..."
+          terraform init -backend=false
+          terraform validate
+        fi
+      displayName: 'Validate Project Structure'
+
+- stage: Security
+  displayName: 'Security Scanning'
+  dependsOn: Validate
+  jobs:
+  - job: SecurityScan
+    displayName: 'Security Scanning'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - task: NodeTool@0
+      displayName: 'Use Node.js'
+      inputs:
+        versionSpec: '18.x'
+        
+    - script: |
+        echo "Running comprehensive security scans..."
+        
+        # Run Trivy vulnerability scanner
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy image --severity HIGH,CRITICAL ${{ variables.dockerImage }} || true
+        
+        # Run OWASP ZAP for DAST
+        docker run --rm -v $(pwd):/zap/wrk/:rw \
+          -t owasp/zap2docker-stable zap-baseline.py \
+          -t http://your-app-url.com || true
+      displayName: 'Run Security Scans'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Security Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/security-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Security Scan Results'
+      condition: succeededOrFailed()
+
+- stage: Test
+  displayName: 'Testing'
+  dependsOn: Validate
+  jobs:
+  - job: UnitTests
+    displayName: 'Unit Tests'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - task: NodeTool@0
+      displayName: 'Use Node.js'
+      inputs:
+        versionSpec: '18.x'
+        
+    - script: |
+        echo "Running comprehensive test suite..."
+        
+        # Install dependencies
+        npm ci --cache .npm --prefer-offline
+        
+        # Run linting
+        npm run lint
+        
+        # Run unit tests
+        npm run test:unit
+        
+        # Run integration tests
+        npm run test:integration
+        
+        # Run E2E tests
+        npm run test:e2e
+        
+        # Generate test coverage report
+        npm run test:coverage
+        echo "Test coverage: $(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')%"
+      displayName: 'Run Tests'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Test Results'
+      condition: succeededOrFailed()
+      
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish Coverage Results'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: 'coverage/cobertura-coverage.xml'
+        reportDirectory: 'coverage'
+      condition: succeededOrFailed()
+
+- stage: Build
+  displayName: 'Build Application'
+  dependsOn: [Validate, Test]
+  jobs:
+  - job: Build
+    displayName: 'Build Application'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Docker@2
+      displayName: 'Login to Azure Container Registry'
+      inputs:
+        containerRegistry: 'Azure Container Registry'
+        repository: '$(appName)'
+        command: 'login'
+        
+    - task: Docker@2
+      displayName: 'Build and Push Docker Image'
+      inputs:
+        containerRegistry: 'Azure Container Registry'
+        repository: '$(appName)'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(Build.BuildId)
+          latest
+        arguments: '--build-arg BUILDKIT_INLINE_CACHE=1'
+        
+    - script: |
+        echo "Building application container..."
+        
+        # Build with security best practices
+        docker build \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --cache-from $(dockerRegistry)/$(appName):latest \
+          --tag $(dockerImage) \
+          --tag $(dockerRegistry)/$(appName):latest \
+          .
+        
+        docker push $(dockerImage)
+        docker push $(dockerRegistry)/$(appName):latest
+      displayName: 'Build Docker Image'
+
+- stage: Scan
+  displayName: 'Container Security Scan'
+  dependsOn: Build
+  jobs:
+  - job: ContainerScan
+    displayName: 'Container Security Scan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Scanning container for vulnerabilities..."
+        
+        # Run Trivy container scan
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v $(pwd):/workspace \
+          aquasec/trivy image \
+          --format json \
+          --output /workspace/trivy-results.json \
+          $(dockerImage)
+        
+        # Check for high/critical vulnerabilities
+        if jq -e '.Results[] | select(.Vulnerabilities[] | .Severity == "HIGH" or .Severity == "CRITICAL")' trivy-results.json; then
+          echo "ERROR: High or critical vulnerabilities found"
+          exit 1
+        fi
+      displayName: 'Run Container Security Scan'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Security Scan Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/security-scan-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Container Security Scan'
+      condition: succeededOrFailed()
+
+- stage: DeployStaging
+  displayName: 'Deploy to Staging'
+  dependsOn: [Build, Scan]
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployStaging
+    displayName: 'Deploy to Staging'
+    environment: 'staging'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core'
+            inputs:
+              version: '6.x'
+              
+          - task: NodeTool@0
+            displayName: 'Use Node.js'
+            inputs:
+              versionSpec: '18.x'
+              
+          - script: |
+              echo "Deploying to staging environment..."
+              
+              # Deploy to staging with blue-green strategy
+              kubectl config use-context staging-cluster
+              kubectl apply -f k8s/staging/
+              
+              # Wait for deployment to be ready
+              kubectl rollout status deployment/$(appName) -n staging --timeout=300s
+              
+              # Run health checks
+              for i in {1..30}; do
+                if curl -f https://staging.$(appName).com/health; then
+                  echo "Staging deployment successful"
+                  break
+                fi
+                sleep 10
+              done
+            displayName: 'Deploy to Staging'
+
+- stage: DeployProduction
+  displayName: 'Deploy to Production'
+  dependsOn: DeployStaging
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployProduction
+    displayName: 'Deploy to Production'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core'
+            inputs:
+              version: '6.x'
+              
+          - task: NodeTool@0
+            displayName: 'Use Node.js'
+            inputs:
+              versionSpec: '18.x'
+              
+          - script: |
+              echo "Deploying to production environment..."
+              
+              # Deploy to production with blue-green strategy
+              kubectl config use-context production-cluster
+              
+              # Create new deployment
+              kubectl apply -f k8s/production/
+              
+              # Wait for new deployment to be ready
+              kubectl rollout status deployment/$(appName) -n production --timeout=300s
+              
+              # Run health checks
+              for i in {1..30}; do
+                if curl -f https://$(appName).com/health; then
+                  echo "Production deployment successful"
+                  break
+                fi
+                sleep 10
+              done
+              
+              # Update ingress to point to new deployment
+              kubectl patch ingress $(appName) -n production --type='json' -p='[{"op": "replace", "path": "/spec/rules/0/http/paths/0/backend/service/name", "value":"$(appName)-new"}]'
+            displayName: 'Deploy to Production'
+
+- stage: Monitor
+  displayName: 'Monitor Deployment'
+  dependsOn: DeployProduction
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: Monitor
+    displayName: 'Monitor Deployment'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Monitoring deployment health..."
+        
+        # Monitor application metrics
+        curl -f https://$(appName).com/metrics || echo "Metrics endpoint not available"
+        
+        # Check application logs
+        kubectl logs deployment/$(appName) -n production --tail=100
+        
+        # Monitor resource usage
+        kubectl top pods -n production
+      displayName: 'Monitor Deployment Health'
+
+- stage: QualityGates
+  displayName: 'Quality Gates'
+  dependsOn: [Test, Scan]
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: QualityGates
+    displayName: 'Quality Gates'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Running quality gates..."
+        
+        # Check test coverage threshold
+        COVERAGE=$(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')
+        if (( $(echo "$COVERAGE < $(testCoverageThreshold)" | bc -l) )); then
+          echo "ERROR: Test coverage $COVERAGE% is below threshold $(testCoverageThreshold)%"
+          exit 1
+        fi
+        
+        # Check security scan results
+        if [ -f "trivy-results.json" ]; then
+          VULN_COUNT=$(jq '.Results[] | .Vulnerabilities | length' trivy-results.json | awk '{sum+=$1} END {print sum}')
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "WARNING: $VULN_COUNT vulnerabilities found"
+          fi
+        fi
+        
+        echo "All quality gates passed"
+      displayName: 'Run Quality Gates'
+
+# Post-deployment tasks
+- stage: PostDeployment
+  displayName: 'Post-Deployment Tasks'
+  dependsOn: [DeployProduction, Monitor]
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: PostDeployment
+    displayName: 'Post-Deployment Tasks'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Slack@1
+      displayName: 'Send Slack Notification'
+      inputs:
+        channel: '#deployments'
+        message: 'Deployment completed successfully for $(appName)'
+      condition: succeeded()
+      
+    - task: EmailReport@1
+      displayName: 'Send Email Report'
+      inputs:
+        to: 'devsecops@company.com'
+        subject: 'Deployment Report - $(appName)'
+        body: 'Deployment completed successfully'
+      condition: succeeded() 

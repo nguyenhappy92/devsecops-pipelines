@@ -1,0 +1,113 @@
+# GitLab CI/CD Pipeline for Node.js Application
+# DevSecOps implementation with security scanning and compliance
+
+stages:
+  - validate
+  - security
+  - test
+  - build
+  - scan
+  - deploy-staging
+  - deploy-production
+  - monitor
+
+variables:
+  DOCKER_REGISTRY: $CI_REGISTRY
+  DOCKER_IMAGE: $DOCKER_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA
+  NODE_VERSION: "18"
+
+validate:
+  stage: validate
+  image: node:$NODE_VERSION-alpine
+  script:
+    - npm ci
+    - npm run lint
+    - npm run security:scan
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+security:
+  stage: security
+  image: node:$NODE_VERSION-alpine
+  script:
+    - npm ci
+    - npm audit --audit-level=high
+    - npm run security:check-dependencies
+  artifacts:
+    reports:
+      security: security-report.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:
+  stage: test
+  image: node:$NODE_VERSION-alpine
+  script:
+    - npm ci
+    - npm run test:coverage
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $DOCKER_IMAGE .
+    - docker push $DOCKER_IMAGE
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+scan:
+  stage: scan
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker pull $DOCKER_IMAGE
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image $DOCKER_IMAGE
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy-staging:
+  stage: deploy-staging
+  image: alpine:latest
+  script:
+    - kubectl config use-context staging-cluster
+    - kubectl set image deployment/nodejs-app-dev nodejs-app=$DOCKER_IMAGE
+    - kubectl rollout status deployment/nodejs-app-dev
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+deploy-production:
+  stage: deploy-production
+  image: alpine:latest
+  script:
+    - kubectl config use-context production-cluster
+    - kubectl set image deployment/nodejs-app-prod nodejs-app=$DOCKER_IMAGE
+    - kubectl rollout status deployment/nodejs-app-prod
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+monitor:
+  stage: monitor
+  image: alpine:latest
+  script:
+    - node scripts/deployment/health-check.js https://app.example.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH 

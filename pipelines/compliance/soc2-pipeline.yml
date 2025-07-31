@@ -1,0 +1,419 @@
+# SOC 2 Type II Compliance Pipeline Template
+# Automated compliance checking and reporting for SOC 2 Type II framework
+
+name: SOC 2 Type II Compliance Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.tf'
+      - '**/*.json'
+      - '**/*.py'
+      - '**/*.js'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'  # Daily compliance scan at 6 AM UTC
+  workflow_dispatch:
+    inputs:
+      compliance_scope:
+        description: 'Compliance scope to check'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - security
+          - availability
+          - processing_integrity
+          - confidentiality
+          - privacy
+
+env:
+  COMPLIANCE_FRAMEWORK: 'SOC2'
+  COMPLIANCE_VERSION: '2017'
+  REPORT_FORMAT: 'json'
+
+jobs:
+  # Compliance Assessment Stage
+  compliance-assessment:
+    name: SOC 2 Compliance Assessment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install compliance tools
+        run: |
+          pip install compliance-checker
+          pip install aws-compliance-checker
+          pip install kubernetes-compliance-checker
+
+      - name: Run SOC 2 Security Controls Check
+        run: |
+          python scripts/compliance/soc2_check.py --scope security
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Run SOC 2 Availability Controls Check
+        run: |
+          python scripts/compliance/soc2_check.py --scope availability
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Run SOC 2 Processing Integrity Controls Check
+        run: |
+          python scripts/compliance/soc2_check.py --scope processing_integrity
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Run SOC 2 Confidentiality Controls Check
+        run: |
+          python scripts/compliance/soc2_check.py --scope confidentiality
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Run SOC 2 Privacy Controls Check
+        run: |
+          python scripts/compliance/soc2_check.py --scope privacy
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Generate SOC 2 Compliance Report
+        run: |
+          python scripts/compliance/generate_soc2_report.py --output soc2-compliance-report.json
+
+      - name: Upload compliance results
+        uses: actions/upload-artifact@v4
+        with:
+          name: soc2-compliance-results
+          path: |
+            soc2-compliance-report.json
+            compliance-logs/
+
+  # Security Controls Validation
+  security-controls:
+    name: Security Controls Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check IAM Security Controls
+        run: |
+          # Check for least privilege access
+          aws iam get-account-authorization-details --query 'UserDetailList[?AttachedManagedPolicies[?PolicyArn==`arn:aws:iam::aws:policy/AdministratorAccess`]]'
+          
+          # Check for MFA enforcement
+          aws iam get-account-summary --query 'SummaryMap.MFADevices'
+          
+          # Check for password policy
+          aws iam get-account-password-policy
+
+      - name: Check Network Security Controls
+        run: |
+          # Check VPC security groups
+          aws ec2 describe-security-groups --query 'SecurityGroups[?IpPermissions[?IpRanges[?CidrIp==`0.0.0.0/0`]]]'
+          
+          # Check for public subnets
+          aws ec2 describe-subnets --query 'Subnets[?MapPublicIpOnLaunch==`true`]'
+          
+          # Check for encryption at rest
+          aws rds describe-db-instances --query 'DBInstances[?StorageEncrypted==`false`]'
+
+      - name: Check Data Protection Controls
+        run: |
+          # Check S3 bucket encryption
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-encryption --bucket {}
+          
+          # Check for data classification
+          aws macie2 list-classification-jobs --query 'classificationJobSummaries'
+
+      - name: Upload security controls results
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-controls-results
+          path: security-controls-report.json
+
+  # Availability Controls Validation
+  availability-controls:
+    name: Availability Controls Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check Backup and Recovery Controls
+        run: |
+          # Check RDS backup retention
+          aws rds describe-db-instances --query 'DBInstances[?BackupRetentionPeriod<7]'
+          
+          # Check S3 versioning
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-versioning --bucket {}
+          
+          # Check disaster recovery setup
+          aws rds describe-db-instances --query 'DBInstances[?MultiAZ==`false`]'
+
+      - name: Check Monitoring and Alerting
+        run: |
+          # Check CloudWatch alarms
+          aws cloudwatch describe-alarms --query 'MetricAlarms[?StateValue==`ALARM`]'
+          
+          # Check log retention
+          aws logs describe-log-groups --query 'logGroups[?retentionInDays<90]'
+
+      - name: Upload availability controls results
+        uses: actions/upload-artifact@v4
+        with:
+          name: availability-controls-results
+          path: availability-controls-report.json
+
+  # Processing Integrity Controls Validation
+  processing-integrity-controls:
+    name: Processing Integrity Controls Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check Data Processing Controls
+        run: |
+          # Check for data validation
+          aws lambda list-functions --query 'Functions[?Runtime==`nodejs*`]'
+          
+          # Check for error handling
+          aws cloudwatch describe-metric-filters --log-group-name "/aws/lambda/*"
+
+      - name: Check Change Management Controls
+        run: |
+          # Check for change approval process
+          aws configservice list-config-rules --query 'ConfigRules[?ConfigRuleName==`REQUIRED_TAGS`]'
+          
+          # Check for version control
+          aws codecommit list-repositories --query 'repositories'
+
+      - name: Upload processing integrity controls results
+        uses: actions/upload-artifact@v4
+        with:
+          name: processing-integrity-controls-results
+          path: processing-integrity-controls-report.json
+
+  # Confidentiality Controls Validation
+  confidentiality-controls:
+    name: Confidentiality Controls Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check Data Encryption Controls
+        run: |
+          # Check for encryption in transit
+          aws elbv2 describe-load-balancers --query 'LoadBalancers[?Type==`application`]'
+          
+          # Check for KMS usage
+          aws kms list-keys --query 'Keys'
+          
+          # Check for secrets management
+          aws secretsmanager list-secrets --query 'SecretList'
+
+      - name: Check Access Controls
+        run: |
+          # Check for access logging
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-logging --bucket {}
+          
+          # Check for audit trails
+          aws cloudtrail describe-trails --query 'trailList'
+
+      - name: Upload confidentiality controls results
+        uses: actions/upload-artifact@v4
+        with:
+          name: confidentiality-controls-results
+          path: confidentiality-controls-report.json
+
+  # Privacy Controls Validation
+  privacy-controls:
+    name: Privacy Controls Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Check Data Privacy Controls
+        run: |
+          # Check for data retention policies
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-lifecycle-configuration --bucket {}
+          
+          # Check for data anonymization
+          aws macie2 list-classification-jobs --query 'classificationJobSummaries'
+
+      - name: Check Consent Management
+        run: |
+          # Check for consent tracking
+          aws dynamodb list-tables --query 'TableNames[?contains(@, `consent`)]'
+          
+          # Check for data subject rights
+          aws s3api list-buckets --query 'Buckets[].Name' --output text | xargs -I {} aws s3api get-bucket-policy --bucket {}
+
+      - name: Upload privacy controls results
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-controls-results
+          path: privacy-controls-report.json
+
+  # Compliance Reporting
+  compliance-reporting:
+    name: Generate Compliance Report
+    runs-on: ubuntu-latest
+    needs: [compliance-assessment, security-controls, availability-controls, processing-integrity-controls, confidentiality-controls, privacy-controls]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all compliance results
+        uses: actions/download-artifact@v4
+        with:
+          name: soc2-compliance-results
+
+      - name: Download security controls results
+        uses: actions/download-artifact@v4
+        with:
+          name: security-controls-results
+
+      - name: Download availability controls results
+        uses: actions/download-artifact@v4
+        with:
+          name: availability-controls-results
+
+      - name: Download processing integrity controls results
+        uses: actions/download-artifact@v4
+        with:
+          name: processing-integrity-controls-results
+
+      - name: Download confidentiality controls results
+        uses: actions/download-artifact@v4
+        with:
+          name: confidentiality-controls-results
+
+      - name: Download privacy controls results
+        uses: actions/download-artifact@v4
+        with:
+          name: privacy-controls-results
+
+      - name: Generate comprehensive SOC 2 report
+        run: |
+          python scripts/compliance/generate_comprehensive_soc2_report.py \
+            --security-report security-controls-report.json \
+            --availability-report availability-controls-report.json \
+            --processing-integrity-report processing-integrity-controls-report.json \
+            --confidentiality-report confidentiality-controls-report.json \
+            --privacy-report privacy-controls-report.json \
+            --output soc2-comprehensive-report.json
+
+      - name: Generate compliance dashboard
+        run: |
+          python scripts/compliance/generate_compliance_dashboard.py \
+            --report soc2-comprehensive-report.json \
+            --output compliance-dashboard.html
+
+      - name: Upload comprehensive compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: soc2-comprehensive-report
+          path: |
+            soc2-comprehensive-report.json
+            compliance-dashboard.html
+
+      - name: Send compliance notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#compliance'
+          text: 'SOC 2 compliance assessment completed'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Compliance Quality Gates
+  compliance-quality-gates:
+    name: Compliance Quality Gates
+    runs-on: ubuntu-latest
+    needs: [compliance-reporting]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download comprehensive report
+        uses: actions/download-artifact@v4
+        with:
+          name: soc2-comprehensive-report
+
+      - name: Run compliance quality gates
+        run: |
+          python scripts/compliance/run_compliance_quality_gates.py \
+            --report soc2-comprehensive-report.json \
+            --framework SOC2 \
+            --threshold 85
+
+      - name: Generate compliance score
+        run: |
+          COMPLIANCE_SCORE=$(python scripts/compliance/calculate_compliance_score.py --report soc2-comprehensive-report.json)
+          echo "Compliance Score: $COMPLIANCE_SCORE%"
+          
+          if (( $(echo "$COMPLIANCE_SCORE < 85" | bc -l) )); then
+            echo "❌ Compliance score below threshold: $COMPLIANCE_SCORE%"
+            exit 1
+          fi
+          echo "✅ Compliance score: $COMPLIANCE_SCORE%" 

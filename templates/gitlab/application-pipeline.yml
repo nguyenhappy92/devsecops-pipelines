@@ -1,0 +1,320 @@
+# Enterprise Application Pipeline Template
+# GitLab CI/CD Pipeline for Production Applications
+# Features: Multi-stage, Security Scanning, Compliance, Blue-Green Deployment
+
+variables:
+  # Application Configuration
+  APP_NAME: $CI_PROJECT_NAME
+  APP_VERSION: $CI_COMMIT_SHORT_SHA
+  DOCKER_REGISTRY: $CI_REGISTRY
+  DOCKER_IMAGE: $DOCKER_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA
+  
+  # Security Configuration
+  SAST_DISABLED: "false"
+  DAST_DISABLED: "false"
+  SECRET_DETECTION_DISABLED: "false"
+  CONTAINER_SCANNING_DISABLED: "false"
+  
+  # Environment Configuration
+  DEV_ENVIRONMENT: "dev"
+  STAGING_ENVIRONMENT: "staging"
+  PRODUCTION_ENVIRONMENT: "production"
+  
+  # Quality Gates
+  TEST_COVERAGE_THRESHOLD: "80"
+  VULNERABILITY_THRESHOLD: "medium"
+  SECURITY_SCORE_THRESHOLD: "80"
+
+# Pipeline Stages
+stages:
+  - validate
+  - security
+  - test
+  - build
+  - scan
+  - deploy-staging
+  - deploy-production
+  - monitor
+
+# Cache Configuration
+cache:
+  key: $CI_COMMIT_REF_SLUG
+  paths:
+    - node_modules/
+    - .gradle/
+    - .m2/
+    - .cache/
+
+# Include Security Templates
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/DAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/Container-Scanning.gitlab-ci.yml
+
+# Validation Stage
+validate:
+  stage: validate
+  image: alpine:latest
+  script:
+    - echo "Validating project structure and configuration..."
+    - |
+      # Check for required files
+      for file in README.md .gitignore; do
+        if [ ! -f "$file" ]; then
+          echo "ERROR: Required file $file is missing"
+          exit 1
+        fi
+      done
+    - |
+      # Validate Dockerfile if exists
+      if [ -f "Dockerfile" ]; then
+        echo "Validating Dockerfile..."
+        docker run --rm -i hadolint/hadolint < Dockerfile
+      fi
+    - |
+      # Validate Terraform if exists
+      if [ -d "terraform" ]; then
+        echo "Validating Terraform configuration..."
+        terraform init -backend=false
+        terraform validate
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Security Scanning Stage
+security-scan:
+  stage: security
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "Running comprehensive security scans..."
+    - |
+      # Run Trivy vulnerability scanner
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy image --severity HIGH,CRITICAL $DOCKER_IMAGE || true
+    - |
+      # Run OWASP ZAP for DAST
+      docker run --rm -v $(pwd):/zap/wrk/:rw \
+        -t owasp/zap2docker-stable zap-baseline.py \
+        -t http://your-app-url.com || true
+  artifacts:
+    reports:
+      security: security-report.json
+    paths:
+      - security-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Testing Stage
+test:
+  stage: test
+  image: node:18-alpine
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - echo "Running comprehensive test suite..."
+    - npm run lint
+    - npm run test:unit
+    - npm run test:integration
+    - npm run test:e2e
+    - |
+      # Generate test coverage report
+      npm run test:coverage
+      echo "Test coverage: $(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')%"
+  coverage: '/All files[^|]*\|[^|]*\|[^|]*\|[^|]*\s+(\d+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+      junit: test-results.xml
+    paths:
+      - coverage/
+      - test-results.xml
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Build Stage
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Building application container..."
+    - |
+      # Build with security best practices
+      docker build \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --cache-from $DOCKER_REGISTRY/$CI_PROJECT_PATH:latest \
+        --tag $DOCKER_IMAGE \
+        --tag $DOCKER_REGISTRY/$CI_PROJECT_PATH:latest \
+        .
+    - docker push $DOCKER_IMAGE
+    - docker push $DOCKER_REGISTRY/$CI_PROJECT_PATH:latest
+  artifacts:
+    paths:
+      - docker-image-digest.txt
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Container Scanning Stage
+container-scan:
+  stage: scan
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "Scanning container for vulnerabilities..."
+    - |
+      # Run Trivy container scan
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v $(pwd):/workspace \
+        aquasec/trivy image \
+        --format json \
+        --output /workspace/trivy-results.json \
+        $DOCKER_IMAGE
+    - |
+      # Check for high/critical vulnerabilities
+      if jq -e '.Results[] | select(.Vulnerabilities[] | .Severity == "HIGH" or .Severity == "CRITICAL")' trivy-results.json; then
+        echo "ERROR: High or critical vulnerabilities found"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      container_scanning: trivy-results.json
+    paths:
+      - trivy-results.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Staging Deployment
+deploy-staging:
+  stage: deploy-staging
+  image: alpine:latest
+  environment:
+    name: staging
+    url: https://staging.$CI_PROJECT_NAME.com
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - echo "Deploying to staging environment..."
+    - |
+      # Deploy to staging with blue-green strategy
+      kubectl config use-context staging-cluster
+      kubectl apply -f k8s/staging/
+      
+      # Wait for deployment to be ready
+      kubectl rollout status deployment/$APP_NAME -n staging --timeout=300s
+      
+      # Run health checks
+      for i in {1..30}; do
+        if curl -f https://staging.$CI_PROJECT_NAME.com/health; then
+          echo "Staging deployment successful"
+          break
+        fi
+        sleep 10
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+# Production Deployment
+deploy-production:
+  stage: deploy-production
+  image: alpine:latest
+  environment:
+    name: production
+    url: https://$CI_PROJECT_NAME.com
+  before_script:
+    - apk add --no-cache curl jq kubectl
+  script:
+    - echo "Deploying to production environment..."
+    - |
+      # Deploy to production with blue-green strategy
+      kubectl config use-context production-cluster
+      
+      # Create new deployment
+      kubectl apply -f k8s/production/
+      
+      # Wait for new deployment to be ready
+      kubectl rollout status deployment/$APP_NAME -n production --timeout=300s
+      
+      # Run health checks
+      for i in {1..30}; do
+        if curl -f https://$CI_PROJECT_NAME.com/health; then
+          echo "Production deployment successful"
+          break
+        fi
+        sleep 10
+      done
+      
+      # Update ingress to point to new deployment
+      kubectl patch ingress $APP_NAME -n production --type='json' -p='[{"op": "replace", "path": "/spec/rules/0/http/paths/0/backend/service/name", "value":"'$APP_NAME'-new"}]'
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  dependencies:
+    - deploy-staging
+
+# Monitoring Stage
+monitor:
+  stage: monitor
+  image: alpine:latest
+  script:
+    - echo "Monitoring deployment health..."
+    - |
+      # Monitor application metrics
+      curl -f https://$CI_PROJECT_NAME.com/metrics || echo "Metrics endpoint not available"
+      
+      # Check application logs
+      kubectl logs deployment/$APP_NAME -n production --tail=100
+      
+      # Monitor resource usage
+      kubectl top pods -n production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  dependencies:
+    - deploy-production
+
+# Quality Gates
+quality-gates:
+  stage: .post
+  image: alpine:latest
+  script:
+    - echo "Running quality gates..."
+    - |
+      # Check test coverage threshold
+      COVERAGE=$(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')
+      if (( $(echo "$COVERAGE < $TEST_COVERAGE_THRESHOLD" | bc -l) )); then
+        echo "ERROR: Test coverage $COVERAGE% is below threshold $TEST_COVERAGE_THRESHOLD%"
+        exit 1
+      fi
+    - |
+      # Check security scan results
+      if [ -f "trivy-results.json" ]; then
+        VULN_COUNT=$(jq '.Results[] | .Vulnerabilities | length' trivy-results.json | awk '{sum+=$1} END {print sum}')
+        if [ "$VULN_COUNT" -gt 0 ]; then
+          echo "WARNING: $VULN_COUNT vulnerabilities found"
+        fi
+      fi
+    - echo "All quality gates passed"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  dependencies:
+    - test
+    - container-scan 

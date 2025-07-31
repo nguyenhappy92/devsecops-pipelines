@@ -1,0 +1,469 @@
+# Enterprise Security Pipeline Template
+# Azure DevOps Security Pipeline for Enterprise Applications
+# Features: SAST, DAST, SCA, Secret Detection, Compliance Scanning
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - '**/*'
+
+pr:
+  branches:
+    include:
+      - main
+
+schedules:
+- cron: "0 2 * * *"  # Daily at 2 AM UTC
+  displayName: Daily Security Scan
+  branches:
+    include:
+      - main
+  always: true
+
+variables:
+  # Security Configuration
+  sastEnabled: 'true'
+  dastEnabled: 'true'
+  scaEnabled: 'true'
+  secretDetectionEnabled: 'true'
+  complianceScanningEnabled: 'true'
+  
+  # Security Thresholds
+  criticalVulnerabilitiesThreshold: '0'
+  highVulnerabilitiesThreshold: '5'
+  mediumVulnerabilitiesThreshold: '20'
+  
+  # Compliance Standards
+  soc2Enabled: 'true'
+  pciDssEnabled: 'true'
+  gdprEnabled: 'true'
+  iso27001Enabled: 'true'
+
+stages:
+- stage: SAST
+  displayName: 'Static Application Security Testing'
+  jobs:
+  - job: SAST
+    displayName: 'SAST Security Scan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - task: NodeTool@0
+      displayName: 'Use Node.js'
+      inputs:
+        versionSpec: '18.x'
+        
+    - task: SonarQubePrepare@4
+      displayName: 'Prepare SonarQube Analysis'
+      inputs:
+        SonarQube: 'SonarQube'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        
+    - task: SonarQubeAnalyze@4
+      displayName: 'Run SonarQube Analysis'
+      inputs:
+        SonarQube: 'SonarQube'
+        
+    - task: SonarQubePublish@4
+      displayName: 'Publish SonarQube Results'
+      inputs:
+        SonarQube: 'SonarQube'
+        pollingTimeoutSec: '300'
+        
+    - script: |
+        echo "Running Semgrep SAST..."
+        
+        # Run Semgrep with security rules
+        docker run --rm -v $(pwd):/src returntocorp/semgrep semgrep \
+          --config p/security-audit \
+          --config p/secrets \
+          --config p/owasp-top-ten \
+          --json \
+          --output semgrep-results.json \
+          /src
+      displayName: 'Run Semgrep SAST'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish SAST Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/sast-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'SAST Results'
+      condition: succeededOrFailed()
+
+- stage: DAST
+  displayName: 'Dynamic Application Security Testing'
+  dependsOn: SAST
+  jobs:
+  - job: DAST
+    displayName: 'DAST Security Scan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Running OWASP ZAP DAST..."
+        
+        # Run OWASP ZAP baseline scan
+        docker run --rm -v $(pwd):/zap/wrk/:rw \
+          -t owasp/zap2docker-stable zap-baseline.py \
+          -t http://your-app-url.com \
+          -J zap-baseline-report.json \
+          -j zap-baseline-report.xml
+      displayName: 'Run OWASP ZAP Baseline'
+      
+    - script: |
+        echo "Running OWASP ZAP full scan..."
+        
+        # Run OWASP ZAP full scan
+        docker run --rm -v $(pwd):/zap/wrk/:rw \
+          -t owasp/zap2docker-stable zap-full-scan.py \
+          -t http://your-app-url.com \
+          -J zap-full-report.json \
+          -j zap-full-report.xml
+      displayName: 'Run OWASP ZAP Full Scan'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish DAST Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/zap-*.xml'
+        mergeTestResults: true
+        testRunTitle: 'DAST Results'
+      condition: succeededOrFailed()
+
+- stage: SCA
+  displayName: 'Software Composition Analysis'
+  jobs:
+  - job: SCA
+    displayName: 'Software Composition Analysis'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Running Trivy SCA..."
+        
+        # Run Trivy for software composition analysis
+        docker run --rm -v $(pwd):/workspace \
+          aquasec/trivy fs \
+          --format json \
+          --output trivy-sca-results.json \
+          --severity HIGH,CRITICAL \
+          /workspace
+      displayName: 'Run Trivy SCA'
+      
+    - task: SnykSecurityScan@1
+      displayName: 'Run Snyk SCA'
+      inputs:
+        serviceConnectionEndpoint: 'Snyk'
+        testType: 'app'
+        failOnIssues: false
+        monitorOnBuild: true
+        
+    - task: PublishTestResults@2
+      displayName: 'Publish SCA Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/sca-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'SCA Results'
+      condition: succeededOrFailed()
+
+- stage: SecretDetection
+  displayName: 'Secret Detection'
+  jobs:
+  - job: SecretDetection
+    displayName: 'Secret Detection'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Running TruffleHog secret detection..."
+        
+        # Run TruffleHog for secret detection
+        docker run --rm -v $(pwd):/src trufflesecurity/trufflehog \
+          --only-verified \
+          --json \
+          /src > trufflehog-results.json
+      displayName: 'Run TruffleHog'
+      
+    - task: GitGuardianScan@1
+      displayName: 'Run GitGuardian Scan'
+      inputs:
+        apiKey: '$(GITGUARDIAN_API_KEY)'
+        scanType: 'full'
+        
+    - task: PublishTestResults@2
+      displayName: 'Publish Secret Detection Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/secret-detection-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Secret Detection Results'
+      condition: succeededOrFailed()
+
+- stage: ContainerSecurity
+  displayName: 'Container Security'
+  jobs:
+  - job: ContainerSecurity
+    displayName: 'Container Security Scan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Building test container image..."
+        docker build -t test-image .
+      displayName: 'Build Test Image'
+      
+    - script: |
+        echo "Running Trivy container scan..."
+        
+        # Run Trivy container scan
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+          -v $(pwd):/workspace \
+          aquasec/trivy image \
+          --format json \
+          --output /workspace/trivy-container-results.json \
+          test-image
+      displayName: 'Run Trivy Container Scan'
+      
+    - task: SnykSecurityScan@1
+      displayName: 'Run Snyk Container Scan'
+      inputs:
+        serviceConnectionEndpoint: 'Snyk'
+        testType: 'container'
+        imageName: 'test-image'
+        failOnIssues: false
+        
+    - task: PublishTestResults@2
+      displayName: 'Publish Container Security Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/container-security-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Container Security Results'
+      condition: succeededOrFailed()
+
+- stage: InfrastructureSecurity
+  displayName: 'Infrastructure Security'
+  jobs:
+  - job: InfrastructureSecurity
+    displayName: 'Infrastructure Security'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: 'latest'
+        
+    - script: |
+        echo "Running Checkov for Terraform..."
+        
+        # Run Checkov for Terraform security
+        docker run --rm -v $(pwd):/src bridgecrew/checkov \
+          -d /src \
+          -f /src/terraform/ \
+          --output json \
+          --output-file-path /src/checkov-results.json
+      displayName: 'Run Checkov'
+      
+    - script: |
+        echo "Running Trivy for IaC..."
+        
+        # Run Trivy for infrastructure as code
+        docker run --rm -v $(pwd):/workspace \
+          aquasec/trivy config \
+          --format json \
+          --output /workspace/trivy-iac-results.json \
+          /workspace/terraform
+      displayName: 'Run Trivy IaC'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Infrastructure Security Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/infrastructure-security-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Infrastructure Security Results'
+      condition: succeededOrFailed()
+
+- stage: ComplianceScan
+  displayName: 'Compliance Scanning'
+  dependsOn: [SAST, DAST, SCA, ContainerSecurity]
+  jobs:
+  - job: ComplianceScan
+    displayName: 'Compliance Scanning'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - script: |
+        echo "Running SOC 2 compliance checks..."
+        python scripts/compliance/soc2_check.py
+      displayName: 'Run SOC 2 Compliance Check'
+      
+    - script: |
+        echo "Running PCI DSS compliance checks..."
+        python scripts/compliance/pci_dss_check.py
+      displayName: 'Run PCI DSS Compliance Check'
+      
+    - script: |
+        echo "Running GDPR compliance checks..."
+        python scripts/compliance/gdpr_check.py
+      displayName: 'Run GDPR Compliance Check'
+      
+    - script: |
+        echo "Generating compliance report..."
+        python scripts/compliance/generate_report.py
+      displayName: 'Generate Compliance Report'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Compliance Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/compliance-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Compliance Results'
+      condition: succeededOrFailed()
+
+- stage: SecurityScore
+  displayName: 'Security Score Calculation'
+  dependsOn: [SAST, DAST, SCA, ContainerSecurity, ComplianceScan]
+  jobs:
+  - job: SecurityScore
+    displayName: 'Calculate Security Score'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - script: |
+        echo "Calculating security score..."
+        python scripts/security/calculate_score.py
+      displayName: 'Calculate Security Score'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Security Score'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/security-score-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Security Score Results'
+      condition: succeededOrFailed()
+
+- stage: VulnerabilityManagement
+  displayName: 'Vulnerability Management'
+  dependsOn: [SAST, DAST, SCA, ContainerSecurity]
+  jobs:
+  - job: VulnerabilityManagement
+    displayName: 'Vulnerability Management'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - script: |
+        echo "Aggregating vulnerability results..."
+        python scripts/security/aggregate_vulnerabilities.py
+      displayName: 'Aggregate Vulnerability Results'
+      
+    - script: |
+        echo "Checking vulnerability thresholds..."
+        python scripts/security/check_thresholds.py
+      displayName: 'Check Vulnerability Thresholds'
+      
+    - script: |
+        echo "Creating vulnerability report..."
+        python scripts/security/create_report.py
+      displayName: 'Create Vulnerability Report'
+      
+    - task: PublishTestResults@2
+      displayName: 'Publish Vulnerability Management Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/vulnerability-management-results.xml'
+        mergeTestResults: true
+        testRunTitle: 'Vulnerability Management Results'
+      condition: succeededOrFailed()
+
+- stage: SecurityNotifications
+  displayName: 'Security Notifications'
+  dependsOn: [VulnerabilityManagement, SecurityScore]
+  condition: always()
+  jobs:
+  - job: SecurityNotifications
+    displayName: 'Security Notifications'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core'
+      inputs:
+        version: '6.x'
+        
+    - script: |
+        echo "Sending security alerts..."
+        python scripts/notifications/send_alerts.py
+      displayName: 'Send Security Alerts'
+      
+    - script: |
+        echo "Updating security dashboard..."
+        python scripts/dashboard/update_dashboard.py
+      displayName: 'Update Security Dashboard'
+
+- stage: SecurityQualityGates
+  displayName: 'Security Quality Gates'
+  dependsOn: [VulnerabilityManagement, SecurityScore]
+  jobs:
+  - job: SecurityQualityGates
+    displayName: 'Security Quality Gates'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Running security quality gates..."
+        
+        # Check critical vulnerabilities
+        CRITICAL_COUNT=$(jq '.critical_count' vulnerability-report/vulnerability-report.json)
+        if [ "$CRITICAL_COUNT" -gt "$(criticalVulnerabilitiesThreshold)" ]; then
+          echo "ERROR: Critical vulnerabilities exceed threshold"
+          exit 1
+        fi
+        
+        # Check high vulnerabilities
+        HIGH_COUNT=$(jq '.high_count' vulnerability-report/vulnerability-report.json)
+        if [ "$HIGH_COUNT" -gt "$(highVulnerabilitiesThreshold)" ]; then
+          echo "ERROR: High vulnerabilities exceed threshold"
+          exit 1
+        fi
+        
+        # Check security score
+        SECURITY_SCORE=$(jq '.security_score' security-score/security-score.json)
+        if [ "$SECURITY_SCORE" -lt "$(securityScoreThreshold)" ]; then
+          echo "ERROR: Security score below threshold"
+          exit 1
+        fi
+        
+        echo "All security quality gates passed"
+      displayName: 'Run Security Quality Gates' 

@@ -1,0 +1,409 @@
+# Java Application Pipeline Template
+# Comprehensive CI/CD pipeline for Java applications with security and compliance
+
+name: Java Application Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**/*.java'
+      - '**/*.xml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'pom.xml'
+      - 'build.gradle'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily security scan at 2 AM UTC
+
+env:
+  JAVA_VERSION: '17'
+  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+  DOCKER_IMAGE: ${{ secrets.DOCKER_REGISTRY }}/java-app:${{ github.sha }}
+
+jobs:
+  # Validation Stage
+  validate:
+    name: Code Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Validate Maven project
+        run: mvn validate
+
+      - name: Run Checkstyle
+        run: mvn checkstyle:check
+
+      - name: Run SpotBugs
+        run: mvn spotbugs:check
+
+      - name: Run PMD
+        run: mvn pmd:check
+
+  # Security Stage
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Run OWASP Dependency Check
+        run: mvn org.owasp:dependency-check-maven:check
+
+      - name: Run Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+            p/java
+          output-format: sarif
+          output-file: semgrep-results.sarif
+
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Upload security results
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-results
+          path: |
+            target/dependency-check-report.html
+            semgrep-results.sarif
+            snyk-report.json
+
+  # Testing Stage
+  test:
+    name: Testing
+    runs-on: ubuntu-latest
+    needs: [validate]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Run unit tests
+        run: mvn test
+
+      - name: Run integration tests
+        run: mvn verify -P integration-test
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+
+      - name: Run E2E tests
+        run: mvn verify -P e2e-test
+
+      - name: Generate coverage report
+        run: mvn jacoco:report
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./target/site/jacoco/jacoco.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+            target/failsafe-reports/
+
+  # Build Stage
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build application
+        run: mvn clean package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Container Security Stage
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Run Snyk container scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.DOCKER_IMAGE }}
+          args: --severity-threshold=high
+
+      - name: Upload container security results
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-security-results
+          path: |
+            trivy-results.sarif
+            snyk-container-report.json
+
+  # Quality Gates Stage
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    needs: [test, security, container-security]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
+      - name: Download security results
+        uses: actions/download-artifact@v4
+        with:
+          name: security-results
+
+      - name: Download container security results
+        uses: actions/download-artifact@v4
+        with:
+          name: container-security-results
+
+      - name: Run quality gates
+        run: |
+          # Check test coverage threshold
+          COVERAGE=$(xmllint --xpath "string(//coverage/@line-rate)" target/site/jacoco/jacoco.xml)
+          COVERAGE_PERCENT=$(echo "$COVERAGE * 100" | bc -l)
+          if (( $(echo "$COVERAGE_PERCENT < 80" | bc -l) )); then
+            echo "❌ Test coverage below 80%: $COVERAGE_PERCENT%"
+            exit 1
+          fi
+          echo "✅ Test coverage: $COVERAGE_PERCENT%"
+
+          # Check security vulnerabilities
+          if [ -f "semgrep-results.sarif" ]; then
+            VULNERABILITIES=$(jq '.runs[0].results | length' semgrep-results.sarif)
+            if [ "$VULNERABILITIES" -gt 5 ]; then
+              echo "❌ Too many security vulnerabilities: $VULNERABILITIES"
+              exit 1
+            fi
+            echo "✅ Security vulnerabilities: $VULNERABILITIES"
+          fi
+
+          # Check container vulnerabilities
+          if [ -f "trivy-results.sarif" ]; then
+            CRITICAL_VULNS=$(jq '.runs[0].results | map(select(.level == "error")) | length' trivy-results.sarif)
+            if [ "$CRITICAL_VULNS" -gt 0 ]; then
+              echo "❌ Critical container vulnerabilities found: $CRITICAL_VULNS"
+              exit 1
+            fi
+            echo "✅ Container security: PASS"
+          fi
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [quality-gates]
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name staging-cluster --region ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to staging
+        run: |
+          kubectl set image deployment/java-app-staging java-app=${{ env.DOCKER_IMAGE }}
+          kubectl rollout status deployment/java-app-staging
+
+      - name: Run health checks
+        run: |
+          kubectl wait --for=condition=ready pod -l app=java-app -n staging --timeout=300s
+          curl -f http://staging.example.com/actuator/health
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name production-cluster --region ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to production
+        run: |
+          kubectl set image deployment/java-app-production java-app=${{ env.DOCKER_IMAGE }}
+          kubectl rollout status deployment/java-app-production
+
+      - name: Run health checks
+        run: |
+          kubectl wait --for=condition=ready pod -l app=java-app -n production --timeout=300s
+          curl -f https://app.example.com/actuator/health
+
+  # Monitoring Stage
+  monitor:
+    name: Post-Deployment Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run performance tests
+        run: |
+          # Run JMeter performance tests
+          jmeter -n -t performance-tests/test-plan.jmx -l results.jtl -e -o report/
+
+      - name: Check application metrics
+        run: |
+          # Check application health
+          curl -f https://app.example.com/actuator/health
+          
+          # Check Prometheus metrics
+          curl -f https://app.example.com/actuator/prometheus
+          
+          # Check error rates
+          # This would typically query your monitoring system
+
+      - name: Send deployment notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: 'Java application deployed to production'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 

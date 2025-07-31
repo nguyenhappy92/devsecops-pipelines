@@ -1,0 +1,464 @@
+# Enterprise Infrastructure Pipeline
+# Infrastructure as Code Pipeline with Security and Compliance
+# Features: Terraform, CloudFormation, Security Scanning, Compliance
+
+name: Enterprise Infrastructure Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/**'
+      - 'cloudformation/**'
+      - 'kubernetes/**'
+      - 'docker/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - 'cloudformation/**'
+      - 'kubernetes/**'
+      - 'docker/**'
+  workflow_dispatch:
+
+env:
+  # Infrastructure Configuration
+  TERRAFORM_VERSION: "1.5.0"
+  AWS_REGION: "us-west-2"
+  KUBERNETES_VERSION: "1.27"
+  
+  # Environment Configuration
+  DEV_ENVIRONMENT: "dev"
+  STAGING_ENVIRONMENT: "staging"
+  PRODUCTION_ENVIRONMENT: "production"
+  
+  # Security Configuration
+  INFRASTRUCTURE_SCANNING_ENABLED: true
+  COMPLIANCE_SCANNING_ENABLED: true
+  COST_OPTIMIZATION_ENABLED: true
+
+jobs:
+  # Infrastructure Validation
+  validate-infrastructure:
+    name: Validate Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Terraform Format Check
+        run: |
+          echo "Checking Terraform formatting..."
+          terraform fmt -check -recursive terraform/
+          
+      - name: Terraform Init
+        run: |
+          echo "Initializing Terraform..."
+          cd terraform/
+          terraform init -backend=false
+          
+      - name: Terraform Validate
+        run: |
+          echo "Validating Terraform configuration..."
+          cd terraform/
+          terraform validate
+          
+      - name: Terraform Plan
+        run: |
+          echo "Generating Terraform plan..."
+          cd terraform/
+          terraform plan -out=tfplan
+          
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+
+  # Infrastructure Security Scanning
+  infrastructure-security:
+    name: Infrastructure Security Scan
+    runs-on: ubuntu-latest
+    needs: validate-infrastructure
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Checkov for Terraform
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: sarif
+          output_file: checkov-terraform-results.sarif
+          
+      - name: Run Trivy for IaC
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform/'
+          format: 'sarif'
+          output: 'trivy-iac-results.sarif'
+          
+      - name: Run Tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: terraform/
+          format: sarif
+          out: tfsec-results.sarif
+          
+      - name: Upload Security Results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: checkov-terraform-results.sarif
+
+  # CloudFormation Validation
+  validate-cloudformation:
+    name: Validate CloudFormation
+    runs-on: ubuntu-latest
+    if: hashFiles('cloudformation/**') != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Validate CloudFormation Templates
+        run: |
+          echo "Validating CloudFormation templates..."
+          for template in cloudformation/*.yaml cloudformation/*.yml cloudformation/*.json; do
+            if [ -f "$template" ]; then
+              echo "Validating $template..."
+              aws cloudformation validate-template --template-body file://$template
+            fi
+          done
+
+  # Kubernetes Validation
+  validate-kubernetes:
+    name: Validate Kubernetes
+    runs-on: ubuntu-latest
+    if: hashFiles('kubernetes/**') != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Validate Kubernetes Manifests
+        run: |
+          echo "Validating Kubernetes manifests..."
+          for manifest in kubernetes/*.yaml kubernetes/*.yml; do
+            if [ -f "$manifest" ]; then
+              echo "Validating $manifest..."
+              kubectl apply --dry-run=client -f $manifest
+            fi
+          done
+          
+      - name: Run Kubeval
+        uses: garethr/kubeval-action@master
+        with:
+          files: kubernetes/
+          schema_location: 'https://kubernetesjsonschema.dev'
+
+  # Docker Security
+  docker-security:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    if: hashFiles('docker/**') != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Build Docker images
+        run: |
+          echo "Building Docker images..."
+          for dockerfile in docker/*/Dockerfile; do
+            if [ -f "$dockerfile" ]; then
+              dir=$(dirname "$dockerfile")
+              name=$(basename "$dir")
+              docker build -t $name $dir
+            fi
+          done
+          
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'test-image'
+          format: 'sarif'
+          output: 'trivy-docker-results.sarif'
+          
+      - name: Upload Docker scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: trivy-docker-results.sarif
+
+  # Cost Optimization
+  cost-optimization:
+    name: Cost Optimization Analysis
+    runs-on: ubuntu-latest
+    needs: validate-infrastructure
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Run Infracost
+        uses: infracost/actions/comment@v2
+        with:
+          path: terraform/
+          terraform_plan_flags: "-out=tfplan"
+          terraform_workspace: dev
+          
+      - name: Generate Cost Report
+        run: |
+          echo "Generating cost optimization report..."
+          python scripts/cost/generate_cost_report.py
+          
+      - name: Upload Cost Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: cost-report
+          path: cost-report.json
+
+  # Compliance Scanning
+  compliance-scan:
+    name: Infrastructure Compliance
+    runs-on: ubuntu-latest
+    needs: [infrastructure-security, cost-optimization]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run CIS Benchmark Checks
+        run: |
+          echo "Running CIS benchmark checks..."
+          python scripts/compliance/cis_benchmark.py
+          
+      - name: Run AWS Well-Architected Framework
+        run: |
+          echo "Running AWS Well-Architected Framework checks..."
+          python scripts/compliance/well_architected.py
+          
+      - name: Run Security Best Practices
+        run: |
+          echo "Running security best practices checks..."
+          python scripts/compliance/security_best_practices.py
+          
+      - name: Generate Compliance Report
+        run: |
+          echo "Generating compliance report..."
+          python scripts/compliance/generate_infra_report.py
+          
+      - name: Upload Compliance Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: infrastructure-compliance-report
+          path: |
+            infrastructure-compliance-report.html
+            infrastructure-compliance-report.json
+
+  # Dev Environment Deployment
+  deploy-dev:
+    name: Deploy to Dev Environment
+    runs-on: ubuntu-latest
+    needs: [validate-infrastructure, infrastructure-security]
+    environment: dev
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Deploy to Dev
+        run: |
+          echo "Deploying to dev environment..."
+          cd terraform/
+          terraform init
+          terraform workspace select dev
+          terraform apply -auto-approve
+          
+      - name: Run Health Checks
+        run: |
+          echo "Running health checks..."
+          python scripts/infrastructure/health_checks.py --environment dev
+
+  # Staging Environment Deployment
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, compliance-scan]
+    environment: staging
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGING }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Deploy to Staging
+        run: |
+          echo "Deploying to staging environment..."
+          cd terraform/
+          terraform init
+          terraform workspace select staging
+          terraform apply -auto-approve
+          
+      - name: Run Health Checks
+        run: |
+          echo "Running health checks..."
+          python scripts/infrastructure/health_checks.py --environment staging
+
+  # Production Environment Deployment
+  deploy-production:
+    name: Deploy to Production Environment
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Deploy to Production
+        run: |
+          echo "Deploying to production environment..."
+          cd terraform/
+          terraform init
+          terraform workspace select production
+          terraform apply -auto-approve
+          
+      - name: Run Health Checks
+        run: |
+          echo "Running health checks..."
+          python scripts/infrastructure/health_checks.py --environment production
+
+  # Infrastructure Monitoring
+  monitor-infrastructure:
+    name: Monitor Infrastructure
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Monitor Infrastructure Health
+        run: |
+          echo "Monitoring infrastructure health..."
+          python scripts/infrastructure/monitor.py
+          
+      - name: Check Resource Usage
+        run: |
+          echo "Checking resource usage..."
+          python scripts/infrastructure/resource_usage.py
+          
+      - name: Generate Monitoring Report
+        run: |
+          echo "Generating monitoring report..."
+          python scripts/infrastructure/generate_monitoring_report.py
+
+  # Infrastructure Quality Gates
+  infrastructure-quality-gates:
+    name: Infrastructure Quality Gates
+    runs-on: ubuntu-latest
+    needs: [infrastructure-security, compliance-scan, cost-optimization]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download results
+        uses: actions/download-artifact@v3
+        with:
+          name: infrastructure-compliance-report
+          path: compliance-report/
+          
+      - name: Run Infrastructure Quality Gates
+        run: |
+          echo "Running infrastructure quality gates..."
+          
+          # Check security findings
+          if [ -f "compliance-report/infrastructure-compliance-report.json" ]; then
+            SECURITY_ISSUES=$(jq '.security_issues' compliance-report/infrastructure-compliance-report.json)
+            if [ "$SECURITY_ISSUES" -gt 0 ]; then
+              echo "ERROR: Security issues found in infrastructure"
+              exit 1
+            fi
+          fi
+          
+          # Check compliance status
+          if [ -f "compliance-report/infrastructure-compliance-report.json" ]; then
+            COMPLIANCE_SCORE=$(jq '.compliance_score' compliance-report/infrastructure-compliance-report.json)
+            if [ "$COMPLIANCE_SCORE" -lt 80 ]; then
+              echo "ERROR: Compliance score below threshold"
+              exit 1
+            fi
+          fi
+          
+          # Check cost optimization
+          if [ -f "cost-report/cost-report.json" ]; then
+            COST_INCREASE=$(jq '.cost_increase_percentage' cost-report/cost-report.json)
+            if [ "$COST_INCREASE" -gt 10 ]; then
+              echo "WARNING: Cost increase exceeds threshold"
+            fi
+          fi
+          
+          echo "All infrastructure quality gates passed" 

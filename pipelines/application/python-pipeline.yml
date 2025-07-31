@@ -1,0 +1,391 @@
+# Python Application Pipeline Template
+# Comprehensive CI/CD pipeline for Python applications with security and compliance
+
+name: Python Application Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**/*.py'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'requirements.txt'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily security scan at 2 AM UTC
+
+env:
+  PYTHON_VERSION: '3.11'
+  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+  DOCKER_IMAGE: ${{ secrets.DOCKER_REGISTRY }}/python-app:${{ github.sha }}
+
+jobs:
+  # Validation Stage
+  validate:
+    name: Code Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Black code formatter
+        run: black --check --diff .
+
+      - name: Run Flake8 linter
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run isort import sorter
+        run: isort --check-only --diff .
+
+      - name: Validate requirements
+        run: |
+          pip check
+          safety check --bare
+
+  # Security Stage
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Bandit security linter
+        run: bandit -r . -f json -o bandit-report.json
+
+      - name: Run Safety dependency checker
+        run: safety check --json --output safety-report.json
+
+      - name: Run Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+            p/python
+          output-format: sarif
+          output-file: semgrep-results.sarif
+
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/python@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Upload security results
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-results
+          path: |
+            bandit-report.json
+            safety-report.json
+            semgrep-results.sarif
+            snyk-report.json
+
+  # Testing Stage
+  test:
+    name: Testing
+    runs-on: ubuntu-latest
+    needs: [validate]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest tests/unit/ --cov=app --cov-report=xml --cov-report=html
+
+      - name: Run integration tests
+        run: pytest tests/integration/ --cov=app --cov-append
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          REDIS_URL: ${{ secrets.TEST_REDIS_URL }}
+
+      - name: Run E2E tests
+        run: pytest tests/e2e/ --cov=app --cov-append
+
+      - name: Run performance tests
+        run: pytest tests/performance/ --benchmark-only
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            coverage.xml
+            htmlcov/
+            .pytest_cache/
+
+  # Build Stage
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Container Security Stage
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Run Snyk container scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.DOCKER_IMAGE }}
+          args: --severity-threshold=high
+
+      - name: Upload container security results
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-security-results
+          path: |
+            trivy-results.sarif
+            snyk-container-report.json
+
+  # Quality Gates Stage
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    needs: [test, security, container-security]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
+      - name: Download security results
+        uses: actions/download-artifact@v4
+        with:
+          name: security-results
+
+      - name: Download container security results
+        uses: actions/download-artifact@v4
+        with:
+          name: container-security-results
+
+      - name: Run quality gates
+        run: |
+          # Check test coverage threshold
+          COVERAGE=$(python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); root = tree.getroot(); print(float(root.attrib['line-rate']) * 100)")
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "❌ Test coverage below 80%: $COVERAGE%"
+            exit 1
+          fi
+          echo "✅ Test coverage: $COVERAGE%"
+
+          # Check security vulnerabilities
+          if [ -f "bandit-report.json" ]; then
+            VULNERABILITIES=$(jq '.results | length' bandit-report.json)
+            if [ "$VULNERABILITIES" -gt 3 ]; then
+              echo "❌ Too many security vulnerabilities: $VULNERABILITIES"
+              exit 1
+            fi
+            echo "✅ Security vulnerabilities: $VULNERABILITIES"
+          fi
+
+          # Check container vulnerabilities
+          if [ -f "trivy-results.sarif" ]; then
+            CRITICAL_VULNS=$(jq '.runs[0].results | map(select(.level == "error")) | length' trivy-results.sarif)
+            if [ "$CRITICAL_VULNS" -gt 0 ]; then
+              echo "❌ Critical container vulnerabilities found: $CRITICAL_VULNS"
+              exit 1
+            fi
+            echo "✅ Container security: PASS"
+          fi
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [quality-gates]
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name staging-cluster --region ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to staging
+        run: |
+          kubectl set image deployment/python-app-staging python-app=${{ env.DOCKER_IMAGE }}
+          kubectl rollout status deployment/python-app-staging
+
+      - name: Run health checks
+        run: |
+          kubectl wait --for=condition=ready pod -l app=python-app -n staging --timeout=300s
+          curl -f http://staging.example.com/health
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name production-cluster --region ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to production
+        run: |
+          kubectl set image deployment/python-app-production python-app=${{ env.DOCKER_IMAGE }}
+          kubectl rollout status deployment/python-app-production
+
+      - name: Run health checks
+        run: |
+          kubectl wait --for=condition=ready pod -l app=python-app -n production --timeout=300s
+          curl -f https://app.example.com/health
+
+  # Monitoring Stage
+  monitor:
+    name: Post-Deployment Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run performance tests
+        run: |
+          pip install locust
+          locust -f performance-tests/locustfile.py --headless --users 10 --spawn-rate 1 --run-time 60s
+
+      - name: Check application metrics
+        run: |
+          # Check application health
+          curl -f https://app.example.com/health
+          
+          # Check Prometheus metrics
+          curl -f https://app.example.com/metrics
+          
+          # Check error rates
+          # This would typically query your monitoring system
+
+      - name: Send deployment notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: 'Python application deployed to production'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 

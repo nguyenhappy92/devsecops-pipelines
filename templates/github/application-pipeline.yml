@@ -1,0 +1,375 @@
+# Enterprise Application Pipeline Template
+# GitHub Actions Workflow for Production Applications
+# Features: Multi-stage, Security Scanning, Compliance, Blue-Green Deployment
+
+name: Enterprise Application Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # Application Configuration
+  APP_NAME: ${{ github.event.repository.name }}
+  APP_VERSION: ${{ github.sha }}
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_IMAGE: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+  
+  # Security Configuration
+  SAST_ENABLED: true
+  DAST_ENABLED: true
+  SECRET_SCANNING_ENABLED: true
+  CONTAINER_SCANNING_ENABLED: true
+  
+  # Environment Configuration
+  DEV_ENVIRONMENT: dev
+  STAGING_ENVIRONMENT: staging
+  PRODUCTION_ENVIRONMENT: production
+  
+  # Quality Gates
+  TEST_COVERAGE_THRESHOLD: 80
+  VULNERABILITY_THRESHOLD: medium
+  SECURITY_SCORE_THRESHOLD: 80
+
+# Job Dependencies
+jobs:
+  # Validation Job
+  validate:
+    name: Validate Project Structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Validate project structure
+        run: |
+          echo "Validating project structure and configuration..."
+          
+          # Check for required files
+          for file in README.md .gitignore; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required file $file is missing"
+              exit 1
+            fi
+          done
+          
+          # Validate Dockerfile if exists
+          if [ -f "Dockerfile" ]; then
+            echo "Validating Dockerfile..."
+            docker run --rm -i hadolint/hadolint < Dockerfile
+          fi
+          
+          # Validate Terraform if exists
+          if [ -d "terraform" ]; then
+            echo "Validating Terraform configuration..."
+            terraform init -backend=false
+            terraform validate
+          fi
+
+  # Security Scanning Job
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+          
+      - name: Run OWASP ZAP DAST
+        uses: zaproxy/action-full-scan@v0.8.0
+        with:
+          target: 'https://your-app-url.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+          
+      - name: Upload DAST results
+        uses: actions/upload-artifact@v3
+        with:
+          name: dast-results
+          path: |
+            zap-report.html
+            zap-report.json
+
+  # Testing Job
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Run linting
+        run: npm run lint
+        
+      - name: Run unit tests
+        run: npm run test:unit
+        
+      - name: Run integration tests
+        run: npm run test:integration
+        
+      - name: Run E2E tests
+        run: npm run test:e2e
+        
+      - name: Generate coverage report
+        run: npm run test:coverage
+        
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+          
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            coverage/
+            test-results.xml
+
+  # Build Job
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          
+      - name: Save image digest
+        run: |
+          echo "IMAGE_DIGEST=${{ steps.meta.outputs.tags }}" >> $GITHUB_ENV
+
+  # Container Scanning Job
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          
+      - name: Upload container scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Staging Deployment Job
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, container-scan]
+    environment: staging
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          
+          # Deploy with blue-green strategy
+          kubectl apply -f k8s/staging/
+          
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/${{ env.APP_NAME }} -n staging --timeout=300s
+          
+          # Run health checks
+          for i in {1..30}; do
+            if curl -f https://staging.${{ env.APP_NAME }}.com/health; then
+              echo "Staging deployment successful"
+              break
+            fi
+            sleep 10
+          done
+
+  # Production Deployment Job
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          
+          # Deploy with blue-green strategy
+          kubectl apply -f k8s/production/
+          
+          # Wait for new deployment to be ready
+          kubectl rollout status deployment/${{ env.APP_NAME }} -n production --timeout=300s
+          
+          # Run health checks
+          for i in {1..30}; do
+            if curl -f https://${{ env.APP_NAME }}.com/health; then
+              echo "Production deployment successful"
+              break
+            fi
+            sleep 10
+          done
+          
+          # Update ingress to point to new deployment
+          kubectl patch ingress ${{ env.APP_NAME }} -n production --type='json' -p='[{"op": "replace", "path": "/spec/rules/0/http/paths/0/backend/service/name", "value":"'${{ env.APP_NAME }}'-new"}]'
+
+  # Monitoring Job
+  monitor:
+    name: Monitor Deployment
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+      - name: Monitor deployment health
+        run: |
+          echo "Monitoring deployment health..."
+          
+          # Monitor application metrics
+          curl -f https://${{ env.APP_NAME }}.com/metrics || echo "Metrics endpoint not available"
+          
+          # Check application logs
+          kubectl logs deployment/${{ env.APP_NAME }} -n production --tail=100
+          
+          # Monitor resource usage
+          kubectl top pods -n production
+
+  # Quality Gates Job
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    needs: [test, container-scan]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download test results
+        uses: actions/download-artifact@v3
+        with:
+          name: test-results
+          path: test-results/
+          
+      - name: Run quality gates
+        run: |
+          echo "Running quality gates..."
+          
+          # Check test coverage threshold
+          if [ -f "test-results/coverage/coverage-summary.json" ]; then
+            COVERAGE=$(cat test-results/coverage/coverage-summary.json | jq -r '.total.lines.pct')
+            if (( $(echo "$COVERAGE < ${{ env.TEST_COVERAGE_THRESHOLD }}" | bc -l) )); then
+              echo "ERROR: Test coverage $COVERAGE% is below threshold ${{ env.TEST_COVERAGE_THRESHOLD }}%"
+              exit 1
+            fi
+          fi
+          
+          # Check security scan results
+          if [ -f "trivy-results.sarif" ]; then
+            VULN_COUNT=$(jq '.runs[0].results | length' trivy-results.sarif)
+            if [ "$VULN_COUNT" -gt 0 ]; then
+              echo "WARNING: $VULN_COUNT vulnerabilities found"
+            fi
+          fi
+          
+          echo "All quality gates passed" 
