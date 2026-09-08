@@ -8,7 +8,7 @@ Flask-CORS==6.0.5
 Flask-Limiter==3.5.0
 
 # Security dependencies
-cryptography==48.0.1
+cryptography==50.0.0
 bcrypt==4.1.2
 PyJWT==2.13.0
 python-dotenv==1.2.2
